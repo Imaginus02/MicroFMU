@@ -145,3 +145,15 @@ Before compiling a given port, use
     $ make submodules
 
 to ensure that all required submodules are initialised.
+
+
+
+
+Pour compiler actuellement (en attendant de réparer les tâches) :
+On se place dans le dossier ./ports/unix
+On lance la commande make USER_C_MODULES=../../cilibrary
+
+Ensuite pour lancer micropython, on fait :
+./build-standard/micropython
+
+Dans le shell python on import sa librairie et on peut la tester

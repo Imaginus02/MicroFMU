@@ -1,0 +1,8 @@
+[
+	{
+	  "key": "ctrl+shift+t",
+	  "command": "workbench.action.tasks.runTask",
+	  "args": "Build and Run MicroPython in WSL"
+	}
+]
+  

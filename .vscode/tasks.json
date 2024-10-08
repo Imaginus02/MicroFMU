@@ -1,0 +1,32 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+	  {
+		"label": "Build MicroPython",
+		"type": "shell",
+		"command": "cd ports/unix && make USER_C_MODULES=../../clibrary -C ../../mpy-cross && make submodules",
+		"problemMatcher": [],
+		"group": {
+		  "kind": "build",
+		  "isDefault": true
+		},
+		"options": {
+		  "cwd": "${workspaceFolder}"
+		}
+	  },
+	  {
+		"label": "Build and Run MicroPython in WSL",
+		"type": "shell",
+		"command": "cd ports/unix && make USER_C_MODULES=../../clibrary -C ../../mpy-cross && make submodules && make && ./build-standard/micropython",
+		"problemMatcher": [],
+		"group": {
+		  "kind": "build",
+		  "isDefault": false
+		},
+		"options": {
+		  "cwd": "${workspaceFolder}"
+		}
+	  }
+	]
+}
+  
