@@ -1,3 +1,27 @@
+Pour compiler actuellement (en attendant de réparer les tâches) :
+On se place dans le dossier ./ports/unix
+On lance la commande make USER_C_MODULES=../../cilibrary
+
+Ensuite pour lancer micropython, on fait :
+./build-standard/micropython  
+Le fichier dans ce cas là, le fichier micropython fait 800Ko.
+
+Dans le shell python on import sa librairie et on peut la tester
+
+
+Pour compiler avec micropython-wrap, il faut se placer dans le dossier micropython-wrap-master et lancer la command :
+    $ make usercmodule MICROPYTHON_PORT_DIR=../../ports/unix
+
+Ensuite pour lancer micropython depuis ce dossier  :
+    $ ./../../ports/unix/build-usercmod/micropython
+
+Avec la bibliothèque de test foruni, le fichier micropython pour Unix fait 1.1Mo
+--> Vérifier si la bibliothèque est embarqué 
+
+De nombreuses étapes sont supplémentaires avant de pouvoir exporter pour ESP32 --> Vérifier la taille du fichier : [à lire](ports/esp32/README.md)
+
+
+
 [![Unix CI badge](https://github.com/micropython/micropython/actions/workflows/ports_unix.yml/badge.svg)](https://github.com/micropython/micropython/actions?query=branch%3Amaster+event%3Apush) [![STM32 CI badge](https://github.com/micropython/micropython/actions/workflows/ports_stm32.yml/badge.svg)](https://github.com/micropython/micropython/actions?query=branch%3Amaster+event%3Apush) [![Docs CI badge](https://github.com/micropython/micropython/actions/workflows/docs.yml/badge.svg)](https://docs.micropython.org/) [![codecov](https://codecov.io/gh/micropython/micropython/branch/master/graph/badge.svg?token=I92PfD05sD)](https://codecov.io/gh/micropython/micropython)
 
 The MicroPython project
@@ -149,11 +173,3 @@ to ensure that all required submodules are initialised.
 
 
 
-Pour compiler actuellement (en attendant de réparer les tâches) :
-On se place dans le dossier ./ports/unix
-On lance la commande make USER_C_MODULES=../../cilibrary
-
-Ensuite pour lancer micropython, on fait :
-./build-standard/micropython
-
-Dans le shell python on import sa librairie et on peut la tester
