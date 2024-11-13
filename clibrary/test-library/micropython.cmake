@@ -3,7 +3,7 @@ add_library(usermod_clibrary INTERFACE)
 
 # Ajouter nos fichiers sources :
 target_sources(usermod_clibrary INTERFACE
-	${CMAKE_CURRENT_LIST_DIR}/testlibrary.c
+	${CMAKE_CURRENT_LIST_DIR}/main.c ${CMAKE_CURRENT_LIST_DIR}/fmu/sources/all.c
 )
 
 # AJouter le dossier en tant que "include" :
