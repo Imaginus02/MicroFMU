@@ -4,15 +4,20 @@ Ce projet a pour but de fournir une bibliothèque MicroPython permettant de lanc
 
 ## Utilisation
 
-Pour utiliser cette bibliothèque, suivez les étapes suivantes :
-
-1. Placez votre bibliothèque FMU dans le répertoire de la library.
-2. Changez de répertoire et placez-vous dans celui du matériel cible.
-3. Compilez MicroPython avec l'option `USER_C_MODULES=[chemin vers le répertoire]`.
+```python
+b = MyGenerator(0,100)
+def testing():
+    while b.getCurrent() != -1:
+    	yield iter(b)
+```
 
 ## Compilation
 
-Pour compiler MicroPython avec cette bibliothèque, utilisez la commande suivante depuis le dossier ports/[hardware cible] :
+Pour compiler micropython avec cette bibliothèque, suivez les étapes suivantes :
+
+1. Placez votre fichier FMU dans le répertoire de la bibliothèque.
+2. Changez de répertoire et placez-vous dans celui du matériel cible.
+3. Compilez MicroPython avec l'option `USER_C_MODULES=[chemin vers le répertoire]`:
 
 ```sh
 make USER_C_MODULES=path/to/your/library
@@ -23,7 +28,7 @@ make USER_C_MODULES=path/to/your/library
 - `fmi2.c` : Contient les fonctions de chargement des FMU.
 - `testlibrary.c` : Contient des exemples de fonctions et de classes utilisables avec MicroPython.
 - `micropython.mk` : Fichier Makefile pour la compilation et le nettoyage du projet.
-- `headers` : Dossier des fichiers C fournis par le standard FMU nécessaires pour la compilation du simulateur.
+- `headers/` : Dossier des fichiers C fournis par le standard FMU nécessaires pour la compilation du simulateur.
 
 ## Nettoyage
 

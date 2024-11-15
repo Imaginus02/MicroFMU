@@ -1,4 +1,3 @@
-//#pragma once
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
@@ -8,8 +7,11 @@
 #include "fmu/sources/config.h"
 #include "fmu/sources/model.h"
 #include "fmi2.c"
+
+//Bibliothèque pour l'implémentation en micropython
+#include "py/obj.h"
 #include "py/runtime.h"
-//#include "fmu/sources/all.c"
+
 
 
 //TODO: Make those values read by the Makefile
@@ -20,14 +22,16 @@
 #define fmuGUID "{1AE5E10D-9521-4DE3-80B9-D0EAAA7D5AF1}"
 #endif
 
+//Affichage de messages supplémentaire si le mode debug est activé lors de la compilation avec le flag -DDEBUG
 #ifndef DEBUG
 #define INFO(message)
 #else
 #define INFO(message) printf(message)
 #endif
 
-
+//Fonction minimum de deux objets
 #define min(a,b) ((a)>(b) ? (b) : (a))
+
 
 FMU fmu;
 
@@ -306,21 +310,23 @@ static int simulate(FMU *fmu, double tEnd, double h, fmi2Boolean loggingOn, int 
     return 1; // success
 };
 
-// int main(int argc, char *argv[]) {
-// 	double tEnd = 3;
-// 	double h = 0.01;
-// 	int loggingOn;
-// 	int nCategories=4+1; //TODO: This should come from a struct that is created by the makefile and read from the xml file
-// 	char **logCategories;
-
-// 	loadFunctions(&fmu);
-
-// 	simulate(&fmu, tEnd, h, loggingOn, nCategories, logCategories);
-
-// 	return 0;
-// }
-
-// Define a function :
+/**
+ * @brief Wrapper function for MicroPython to simulate the FMU model.
+ *
+ * This function serves as a MicroPython interface to the `simulate` function,
+ * allowing users to run simulations from within a MicroPython environment.
+ *
+ * @param end_time The end time of the simulation as a MicroPython object.
+ * @param step_size The step size for the simulation as a MicroPython object.
+ * @return A MicroPython integer object indicating the success of the simulation (always returns 1) because it crash in case of failure.
+ *
+ * The function performs the following steps:
+ * 1. Converts the MicroPython objects `end_time` and `step_size` to double values.
+ * 2. Initializes logging and category settings.
+ * 3. Loads the FMU functions.
+ * 4. Calls the `simulate` function with the provided parameters.
+ * 5. Returns a MicroPython integer object indicating success.
+ */
 static mp_obj_t example_simulate(mp_obj_t end_time, mp_obj_t step_size) {
 	//double tStart = mp_obj_get_float(start_time);
 	//printf("tStart: %f\n", tStart);
@@ -339,6 +345,73 @@ static mp_obj_t example_simulate(mp_obj_t end_time, mp_obj_t step_size) {
 	return mp_obj_new_int(1);
 }
 
+
+
+
+// Test for yield statement
+
+// Structure pour stocker l'état du générateur
+typedef struct example_My_Generator_obj_t {
+	mp_obj_base_t base;
+	int current;
+	int end;
+} example_My_Generator_obj_t;
+
+// Fonction pour avoir le nombre current sans l'incrémenter
+static mp_obj_t example_MyGenerator_getiter(mp_obj_t self_in) {
+	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
+	return mp_obj_new_int(self->current);
+}
+
+// On l'associe a une fonction python
+static MP_DEFINE_CONST_FUN_OBJ_1(example_MyGenerator_getCurrent_obj, example_MyGenerator_getiter);
+
+
+
+
+
+// Fonction "itérable" appelée pour obtenir le prochain élément
+static mp_obj_t my_generator_next(mp_obj_t self_in) {
+	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
+
+	if (self->current >= self->end) {
+		return mp_obj_new_int(-1); // Signal de fin
+	}
+
+	mp_obj_t value = mp_obj_new_int(self->current);
+	self->current++;
+	return value;
+} 
+
+// Fonction initialisation du générateur
+static mp_obj_t my_generator_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
+	mp_arg_check_num(n_args, n_kw, 2, 2, false); //2 arguments : start, end
+	example_My_Generator_obj_t *self;
+	self = mp_obj_malloc(example_My_Generator_obj_t, type);
+	self->base.type = type;
+	self->current = mp_obj_get_int(args[0]);
+	self->end = mp_obj_get_int(args[1]);
+	return MP_OBJ_FROM_PTR(self);
+}
+
+// This collects all methods and other static class attributes of the Timer.
+// The table structure is similar to the module table, as detailed below.
+static const mp_rom_map_elem_t example_MyGenerator_locals_dict_table[] = {
+     { MP_ROM_QSTR(MP_QSTR_getCurrent), MP_ROM_PTR(&example_MyGenerator_getCurrent_obj) },
+};
+ static MP_DEFINE_CONST_DICT(example_MyGenerator_locals_dict, example_MyGenerator_locals_dict_table);
+
+
+// Définition du type
+MP_DEFINE_CONST_OBJ_TYPE(
+	example_type_MyGenerator,
+	MP_QSTR_MyGenerator,
+	MP_TYPE_FLAG_NONE,
+	make_new, my_generator_make_new,
+	iter, my_generator_next,
+	locals_dict,&example_MyGenerator_locals_dict
+	);
+
 // On permet l'appel de cette fonction dans python :
 static MP_DEFINE_CONST_FUN_OBJ_2(example_simulate_obj, example_simulate);
 
@@ -346,6 +419,7 @@ static MP_DEFINE_CONST_FUN_OBJ_2(example_simulate_obj, example_simulate);
 static const mp_rom_map_elem_t example_module_globals_table[] = {
 	{ MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_testlibrary)},
 	{ MP_ROM_QSTR(MP_QSTR_simulate), MP_ROM_PTR(&example_simulate_obj)},
+	{ MP_ROM_QSTR(MP_QSTR_MyGenerator), MP_ROM_PTR(&example_type_MyGenerator) },
 };
 static MP_DEFINE_CONST_DICT(example_module_globals, example_module_globals_table);
 
