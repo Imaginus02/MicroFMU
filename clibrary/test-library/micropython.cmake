@@ -1,3 +1,21 @@
+# # Message de build
+# add_custom_target(build_test_library ALL
+#     COMMAND ${CMAKE_COMMAND} -E echo "Building test-library MicroPython module"
+#     COMMENT "Building test-library MicroPython module"
+# )
+
+# # Extraction des fichiers .fmu
+# file(GLOB FMU_FILES "${CLIBRARY_MOD_DIR}/*.fmu")
+
+# foreach(FMU_FILE ${FMU_FILES})
+#     add_custom_command(TARGET build_test_library
+#         COMMAND ${CMAKE_COMMAND} -E echo "Extracting FMU: ${FMU_FILE}"
+#         COMMAND unzip -o ${FMU_FILE} -d ${CLIBRARY_MOD_DIR}/fmu
+#         COMMENT "FMU extracted"
+#     )
+# endforeach()
+
+
 #Création d'une interface pour nos librairie C :
 add_library(usermod_clibrary INTERFACE)
 

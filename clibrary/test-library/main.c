@@ -358,15 +358,23 @@ typedef struct example_My_Generator_obj_t {
 } example_My_Generator_obj_t;
 
 // Fonction pour avoir le nombre current sans l'incrémenter
-static mp_obj_t example_MyGenerator_getiter(mp_obj_t self_in) {
-	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
-	return mp_obj_new_int(self->current);
-}
+// static mp_obj_t example_MyGenerator_getiter(mp_obj_t self_in) {
+// 	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
+// 	return mp_obj_new_int(self->current);
+// }
 
 // On l'associe a une fonction python
-static MP_DEFINE_CONST_FUN_OBJ_1(example_MyGenerator_getCurrent_obj, example_MyGenerator_getiter);
+//static MP_DEFINE_CONST_FUN_OBJ_1(example_MyGenerator_getCurrent_obj, example_MyGenerator_getiter);
 
-
+// Fonction print, gère MyGenerator.__repr__ et MyGenerator.__str__
+static void example_MyGenerator_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
+	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
+	if (kind == PRINT_STR) {
+		mp_printf(print, "%d", self->current);
+	} else {
+		mp_printf(print, "MyGenerator(%d, %d)", self->current, self->end);
+	}
+}
 
 
 
@@ -375,7 +383,7 @@ static mp_obj_t my_generator_next(mp_obj_t self_in) {
 	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
 
 	if (self->current >= self->end) {
-		return mp_obj_new_int(-1); // Signal de fin
+		return mp_make_stop_iteration(MP_OBJ_NULL); // Signal de fin
 	}
 
 	mp_obj_t value = mp_obj_new_int(self->current);
@@ -396,20 +404,21 @@ static mp_obj_t my_generator_make_new(const mp_obj_type_t *type, size_t n_args, 
 
 // This collects all methods and other static class attributes of the Timer.
 // The table structure is similar to the module table, as detailed below.
-static const mp_rom_map_elem_t example_MyGenerator_locals_dict_table[] = {
-     { MP_ROM_QSTR(MP_QSTR_getCurrent), MP_ROM_PTR(&example_MyGenerator_getCurrent_obj) },
-};
- static MP_DEFINE_CONST_DICT(example_MyGenerator_locals_dict, example_MyGenerator_locals_dict_table);
+// static const mp_rom_map_elem_t example_MyGenerator_locals_dict_table[] = {
+//      { MP_ROM_QSTR(MP_QSTR_getCurrent), MP_ROM_PTR(&example_MyGenerator_getCurrent_obj) },
+// };
+//  static MP_DEFINE_CONST_DICT(example_MyGenerator_locals_dict, example_MyGenerator_locals_dict_table);
 
 
 // Définition du type
 MP_DEFINE_CONST_OBJ_TYPE(
 	example_type_MyGenerator,
 	MP_QSTR_MyGenerator,
-	MP_TYPE_FLAG_NONE,
+	MP_TYPE_FLAG_ITER_IS_ITERNEXT,
+	print, example_MyGenerator_print,
 	make_new, my_generator_make_new,
-	iter, my_generator_next,
-	locals_dict,&example_MyGenerator_locals_dict
+	iter, my_generator_next//,
+	//locals_dict,&example_MyGenerator_locals_dict
 	);
 
 // On permet l'appel de cette fonction dans python :

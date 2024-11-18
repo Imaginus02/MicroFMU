@@ -4,11 +4,26 @@ Ce projet a pour but de fournir une bibliothèque MicroPython permettant de lanc
 
 ## Utilisation
 
+### Problèmes actuels
+
+On doit créer nous même le générateur, il n'est pas utilisable directement :
 ```python
 b = MyGenerator(0,100)
-def testing():
-    while b.getCurrent() != -1:
-    	yield iter(b)
+for i in b:
+	iter(b)
+```
+Pour seulement avoir la valeur, et non l'objet :
+```python
+b = MyGenerator(0,100)
+for i in range(100):
+	print(next(b))
+```
+
+Aura comme résultat :
+```python
+MyGenerator(0,100)
+MyGenerator(1,100)
+MyGenerator(2,100)
 ```
 
 ## Compilation
@@ -16,6 +31,7 @@ def testing():
 Pour compiler micropython avec cette bibliothèque, suivez les étapes suivantes :
 
 1. Placez votre fichier FMU dans le répertoire de la bibliothèque.
+	- Actuellement, le compilation de décompresse pas l'archive fmu, il faut extraire son contenu vers un fichier fmu/ 
 2. Changez de répertoire et placez-vous dans celui du matériel cible.
 3. Compilez MicroPython avec l'option `USER_C_MODULES=[chemin vers le répertoire]`:
 
