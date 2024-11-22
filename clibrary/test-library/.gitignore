@@ -1,2 +1,3 @@
 fmu/
 *.fmu
+output.c
