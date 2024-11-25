@@ -137,6 +137,9 @@ echo "int get_variable_count() {" >> "$output_file"
 echo "    return $counter;" >> "$output_file"
 echo "}" >> "$output_file"
 
+#Constant number of variables
+echo "#define NVARIABLES $counter" >> "$output_file"
+
 #End of the file
 
 # Notify user

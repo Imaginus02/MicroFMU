@@ -662,7 +662,7 @@ static mp_obj_t my_generator_next(mp_obj_t self_in) {
 	}
 
 	mp_obj_t *items = m_new(mp_obj_t, self->state.nVariables); //TODO: Replace output directly by this variable
-	items[0] = mp_obj_new_float(self->state.nSteps);
+	items[0] = mp_obj_new_int(self->state.nSteps);
 	for (int i = 1; i < self->state.nVariables; i++) {
 		items[i] = mp_obj_new_float(self->state.output[i]);
 	}
@@ -726,9 +726,6 @@ static mp_obj_t example_simulate(size_t n_args, const mp_obj_t *args) {
 	double h = mp_obj_get_float(args[2]);
 	bool simulateAllBool = mp_obj_is_true(args[3]);
 
-
-
-
 	loadFunctions(&fmu);
 
 	if (simulateAllBool)
@@ -751,11 +748,150 @@ static mp_obj_t example_simulate(size_t n_args, const mp_obj_t *args) {
 // On permet l'appel de cette fonction dans python :
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_simulate_obj, 4, 4, example_simulate);
 
+static int get_variable_index(const char * name) {
+	ScalarVariable *variables;
+	int nVariables = get_variable_count();
+	get_variable_list(&variables);
+	for (int i = 0; i < nVariables; i++) {
+		if (strcmp(variables[i].name, name) == 0) {
+			return i;
+		}
+	}
+	if (strcmp(name, "step") == 0) {
+		return 0;
+	}
+	return -1;
+}
+
+static mp_obj_t example_get_variable_count() {
+	return mp_obj_new_int(NVARIABLES);
+}
+
+static mp_obj_t example_change_variable_value(size_t n_args, const mp_obj_t *args) { //TODO: more robust arg check
+	//mp_obj_t generator, mp_obj_t ValueReference, mp_obj_t value
+	mp_obj_t generator = args[0];
+	mp_obj_t ValueReference = args[1];
+	mp_obj_t value = args[2];
+	printf("ValueReference: %ld\n", mp_obj_get_int(ValueReference));
+	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(generator);
+	//printf("Generator object retrieved\n");
+	//Status setFloat64(ModelInstance* comp, ValueReference vr, const double value[], size_t nValues, size_t* index)
+	const double val = mp_obj_get_float(value);
+	ModelInstance* instance = (ModelInstance*)self->state.component;
+	instance->modelData.g = val;
+	//size_t index = 0;
+	// printf("Value retrieved and casted : %lf\n", (&val)[index++]);
+	// index = 0;
+	// fmi2Status status = setFloat64(self->state.component, mp_obj_get_int(ValueReference), &val, 1, &index);
+	// printf("Value set\n");
+	// if (status > fmi2Warning) {
+	// 	mp_raise_ValueError(MP_ERROR_TEXT("Failed to set variable value"));
+	// 	return mp_const_false;
+	// }
+	return mp_const_true;
+
+}
+
+// Common helper to process variables based on a custom function
+static mp_obj_t process_variables(size_t n_args, const mp_obj_t *args, mp_obj_t (*extractor)(ScalarVariable*)) {
+    ScalarVariable *variables;
+    int nVariables = get_variable_count();
+    get_variable_list(&variables);
+
+    // Validate argument count
+    if ((int)n_args > nVariables) {
+        mp_raise_ValueError(MP_ERROR_TEXT("Too many arguments"));
+    }
+
+    // Handle no arguments: process all variables
+    if (n_args == 0) {
+        mp_obj_t *items = m_new(mp_obj_t, nVariables);
+        for (int i = 0; i < nVariables; i++) {
+            items[i] = extractor(&variables[i]);
+        }
+        return mp_obj_new_tuple(nVariables, items);
+    }
+
+    // Handle multiple arguments
+    mp_obj_t *items = m_new(mp_obj_t, n_args);
+    for (size_t i = 0; i < n_args; i++) {
+        if (mp_obj_is_int(args[i])) {
+            int idx = mp_obj_get_int(args[i]);
+            if (idx > 0 && idx < nVariables) {
+                items[i] = extractor(&variables[idx]);
+            } else {
+                mp_raise_ValueError(MP_ERROR_TEXT("Index out of range"));
+            }
+		} else if (mp_obj_is_str(args[i])) {
+			const char *name = mp_obj_str_get_str(args[i]);
+			int idx = get_variable_index(name);
+			if (idx >= 0) {
+				items[i] = extractor(&variables[idx]);
+			} else {
+				mp_raise_ValueError(MP_ERROR_TEXT("Variable not found"));
+			}
+        } else {
+            mp_raise_ValueError(MP_ERROR_TEXT("Invalid argument type"));
+        }
+    }
+    return mp_obj_new_tuple(n_args, items);
+}
+
+// Extractor functions
+static mp_obj_t extract_name(ScalarVariable *var) {
+	if (var->valueReference == 0) {
+		return mp_obj_new_str("step", 4);
+	}
+    return mp_obj_new_str(var->name, strlen(var->name));
+}
+
+static mp_obj_t extract_base_value(ScalarVariable *var) {
+	if (var->valueReference == 0) {
+		return mp_obj_new_int(0);
+	}
+    if (var->type == REAL) {
+        return mp_obj_new_float(var->start.realValue);
+    } else if (var->type == INTEGER) {
+        return mp_obj_new_int(var->start.intValue);
+    }
+    return mp_const_none;  // Default case if type is unsupported
+}
+
+static mp_obj_t extract_description(ScalarVariable *var) {
+	if (var->valueReference == 0) {
+		return mp_obj_new_str("The current step number", 23);
+	}
+    return mp_obj_new_str(var->description, strlen(var->description));
+}
+
+static mp_obj_t example_get_variable_names(size_t n_args, const mp_obj_t *args) {
+    return process_variables(n_args, args, extract_name);
+}
+
+static mp_obj_t example_get_variables_base_values(size_t n_args, const mp_obj_t *args) {
+    return process_variables(n_args, args, extract_base_value);
+}
+
+static mp_obj_t example_get_variables_description(size_t n_args, const mp_obj_t *args) {
+    return process_variables(n_args, args, extract_description);
+}
+
+static MP_DEFINE_CONST_FUN_OBJ_0(example_get_variable_count_obj, example_get_variable_count);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_change_variable_value_obj, 3, 3, example_change_variable_value);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_get_variable_names_obj, 0, NVARIABLES, example_get_variable_names);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_get_variables_base_values_obj, 0, NVARIABLES, example_get_variables_base_values);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_get_variables_description_obj, 0, NVARIABLES, example_get_variables_description);
+
 // On va mapper les noms des variables et des class :
 static const mp_rom_map_elem_t example_module_globals_table[] = {
 	{ MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_testlibrary)},
 	{ MP_ROM_QSTR(MP_QSTR_simulate), MP_ROM_PTR(&example_simulate_obj)},
 	{ MP_ROM_QSTR(MP_QSTR_MyGenerator), MP_ROM_PTR(&example_type_MyGenerator) },
+	{ MP_ROM_QSTR(MP_QSTR_get_variables_names), MP_ROM_PTR(&example_get_variable_names_obj) },
+	{ MP_ROM_QSTR(MP_QSTR_get_variables_base_values), MP_ROM_PTR(&example_get_variables_base_values_obj) },
+	{ MP_ROM_QSTR(MP_QSTR_get_variables_description), MP_ROM_PTR(&example_get_variables_description_obj) },
+	{ MP_ROM_QSTR(MP_QSTR_get_variable_count), MP_ROM_PTR(&example_get_variable_count_obj) },
+	{ MP_ROM_QSTR(MP_QSTR_change_variable_value), MP_ROM_PTR(&example_change_variable_value_obj) },
 };
 static MP_DEFINE_CONST_DICT(example_module_globals, example_module_globals_table);
 
