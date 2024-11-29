@@ -15,6 +15,23 @@
 #include "fmi2.c"
 #include "output.c"
 
+// A faire :
+// Changer la façon de gérer la simulation : 2 cas
+// - Faire toute la simulation en une seule fois : Appeler la fonction d'initialisation puis la fonction doStep jusqu'à la fin
+// - Faire étape par étape : première initialisation, qui se termine uniquement lorsque nous récupérons la première variable
+//
+// Changer le parseur pour xmllint :
+// Pour avoir le même résultat que grep mais pas sur la même ligne :
+// xmllint --xpath "//ScalarVariable" ./fmu/modelDescription.xml --format
+
+// Faire 2 fonctions en python séparées : 
+// - une pour la simulation entière qui renvoit la liste des tuples des variables à chaque étape
+// - une pour l'initialisation qui renvoit un générateur qui renvoit les variables à chaque étape
+// Le component dans le simulateur ne doit pas être en mode continu à la fin de l'initialisation pour qu'on puisse encore modifier les valeurs initiales des variables
+// C'est le premier appel à doStep qui doit passer en mode continu (actuellement c'est l'initialisation qui le fait, ce qui empèche de modifier les valeurs initiales des variables)
+
+
+
 
 //TODO: Make those values read by the Makefile
 
@@ -99,279 +116,6 @@ int error(const char *message) {
 	return 0;
 }
 
-
-static int simulate(FMU *fmu,double tStart, double tEnd, double h) {
-	INFO("Entering simulate\n");
-
-	int i;
-	double dt, tPre;
-	fmi2Boolean timeEvent, stateEvent, stepEvent, terminateSimulation;
-	double time;
-	int nx;                          // number of state variables
-	int nz;                          // number of state event indicators
-	double *x = NULL;                // continuous states
-	double *xdot = NULL;             // the corresponding derivatives in same order
-	double *z = NULL;                // state event indicators
-	double *prez = NULL;             // previous values of state event indicators
-	fmi2EventInfo eventInfo;         // updated by calls to initialize and eventUpdate
-	fmi2CallbackFunctions callbacks = {fmuLogger, calloc, free, NULL, fmu}; // called by the model during simulation
-	fmi2Component c;                 // instance of the fmu
-	fmi2Status fmi2Flag;             // return code of the fmu functions
-	fmi2Boolean toleranceDefined = fmi2False; // true if model description define tolerance
-	fmi2Real tolerance = 0;          // used in setting up the experiment
-	fmi2Boolean visible = fmi2False; // no simulator user interface
-	int nSteps = 0;
-	int nTimeEvents = 0;
-	int nStepEvents = 0;
-	int nStateEvents = 0;
-
-	ScalarVariable * variables;
-	int nVariables;
-
-	INFO("Variables declared\n");
-
-	// instantiate the fmu
-
-	//fmi2Component fmi2Instantiate(fmi2String instanceName, fmi2Type fmuType, fmi2String fmuGUID,
-    //                        fmi2String fmuResourceLocation, const fmi2CallbackFunctions *functions,
-    //                        fmi2Boolean visible, fmi2Boolean loggingOn)
-	c = fmu->instantiate("BouncingBall", fmi2ModelExchange, fmuGUID, NULL, &callbacks, visible, fmi2False);
-	if (!c) return error("could not instantiate model");
-
-	INFO("FMU instantiated\n");
-
-	// if (nCategories > 0) {
-	// 	fmi2Flag = fmu->setDebugLogging(c, fmi2True, nCategories, categories);
-	// 	if (fmi2Flag > fmi2Warning) {
-	// 		return error("could not initialize model; failed FMI set debug logging");
-	// 	}
-	// }
-
-	INFO("Debug logging set\n");
-
-	// allocate memory
-	nx = getNumberOfContinuousStates(c);
-	nz = getNumberOfEventIndicators(c);
-
-	x = (double *) calloc(nx, sizeof(double));
-	xdot = (double *) calloc(nx, sizeof(double));
-	if (nz > 0) {
-		z = (double *) calloc(nz, sizeof(double));
-		prez = (double *) calloc(nz, sizeof(double));
-	}
-	if ((!x || !xdot) || (nz > 0 && (!z || !prez))) return error("out of memory");
-
-	INFO("Memory allocated\n");
-	
-	get_variable_list(&variables);
-	nVariables = get_variable_count();
-	// Initialize the output array
-	double **output = (double **)calloc(nVariables + 1, sizeof(double *));
-	for (i = 0; i < nVariables + 1; i++) {
-		output[i] = (double *)calloc((size_t)(tEnd/h+10), sizeof(double)); //Au cas où +10, normallement on devrait pas en avoir besoin TODO: Vérifier
-	}
-
-	// setup
-	time = tStart;
-	fmi2Flag = fmu->setupExperiment(c, toleranceDefined, tolerance, tStart, fmi2True, tEnd);
-	if (fmi2Flag > fmi2Warning) {
-		return error("could not initialize model; failed FMI setup experiment");
-	}
-
-	INFO("Experiment setup\n");
-
-	// initialize
-	fmi2Flag = fmu->enterInitializationMode(c);
-	if (fmi2Flag > fmi2Warning) {
-		return error("could not initialize model; failed FMI enter initialization mode");
-	}
-	fmi2Flag = fmu->exitInitializationMode(c);
-	if (fmi2Flag > fmi2Warning) {
-		return error("could not initialize model; failed FMI exit initialization mode");
-	}
-
-	INFO("Initialization mode done\n");
-
-	// event iteration
-	eventInfo.newDiscreteStatesNeeded = fmi2True;
-	eventInfo.terminateSimulation = fmi2False;
-	while (eventInfo.newDiscreteStatesNeeded && !eventInfo.terminateSimulation) {
-		// update discrete states
-		fmi2Flag = fmu->newDiscreteStates(c, &eventInfo);
-		if (fmi2Flag > fmi2Warning) return error("could not set a new discrete state");
-	}
-
-	INFO("Event iteration done\n");
-
-	if (eventInfo.terminateSimulation) {
-		printf("model requested termination at t=%.16g\n", time);
-	} else {
-		// enter Continuous-Time Mode
-		fmi2Flag = fmu->enterContinuousTimeMode(c);
-		if (fmi2Flag > fmi2Warning) return error("could not initialize model; failed FMI enter continuous time mode");
-
-		INFO("Continuous time mode entered\n");
-		// Initialize the output array with variable values
-		INFO("Initializing output array for %d variables\n", nVariables);
-		for (i = 0; i < nVariables-1; i++) {
-			printf("Getting variable %s\n", variables[i].name);
-			if (variables[i].type == REAL) {
-				fmu->getReal(c, &variables[i].valueReference, 1, &output[i + 1][0]);
-			} else if (variables[i].type == INTEGER) {
-				fmi2Integer intValue;
-				fmu->getInteger(c, &variables[i].valueReference, 1, &intValue);
-				output[i + 1][0] = (double)intValue;
-			}
-		}
-
-
-		// enter the simulation loop
-		while (time < tEnd) {
-			INFO("Entering simulation loop\n");
-			// get the current state and derivatives
-			fmi2Flag = fmu->getContinuousStates(c, x, nx);
-			if (fmi2Flag > fmi2Warning) return error("could not retrieve states");
-
-			fmi2Flag = fmu->getDerivatives(c, xdot, nx);
-			if (fmi2Flag > fmi2Warning) return error("could not retrieve derivatives");
-
-			INFO("States and derivatives retrieved\n");
-
-			// advance time
-			tPre = time;
-			time = min(time + h, tEnd);
-			timeEvent = eventInfo.nextEventTimeDefined && time >= eventInfo.nextEventTime;
-			if (timeEvent) time = eventInfo.nextEventTime;
-			dt = time - tPre;
-			fmi2Flag = fmu->setTime(c, time);
-			if (fmi2Flag > fmi2Warning) return error("could not set time");
-
-			INFO("Time set\n");
-
-			// perform one step
-			for (i = 0; i < nx; i++) x[i] += dt * xdot[i]; // forward Euler method
-			fmi2Flag = fmu->setContinuousStates(c, x, nx);
-			if (fmi2Flag > fmi2Warning) return error("could not set continuous states");
-
-			INFO("Step performed\n");
-
-			// check for state event
-			for (i = 0; i < nz; i++) prez[i] = z[i];
-			fmi2Flag = fmu->getEventIndicators(c, z, nz);
-			if (fmi2Flag > fmi2Warning) return error("could not retrieve event indicators");
-			stateEvent = fmi2False;
-			for (i = 0; i < nz; i++) stateEvent = stateEvent || (prez[i] * z[i] < 0);
-
-			INFO("State event checked\n");
-
-			// check for step event
-			fmi2Flag = fmu->completedIntegratorStep(c, fmi2True, &stepEvent, &terminateSimulation);
-			if (fmi2Flag > fmi2Warning) return error("could not complete integrator step");
-			if (terminateSimulation) {
-				printf("model requested termination at t=%.16g\n", time);
-				break; // success
-			}
-
-			INFO("Step event checked\n");
-
-			// handle events
-			if (timeEvent || stateEvent || stepEvent) {
-				INFO("Event detected\n");
-				fmi2Flag = fmu->enterEventMode(c);
-				if (fmi2Flag > fmi2Warning) return error("could not enter event mode");
-
-				if (timeEvent) {
-					INFO("Time event\n");
-					nTimeEvents++;
-					//if (loggingOn) printf("time event at t=%.16g\n", time);
-				}
-				if (stateEvent) {
-					INFO("State event\n");
-					nStateEvents++;
-					//if (loggingOn) for (i = 0; i < nz; i++) printf("state event %s z[%d] at t=%.16g\n", (prez[i] > 0 && z[i] < 0) ? "-\\-" : "-/-", i, time);
-				}
-				if (stepEvent) {
-					INFO("Step event\n");
-					nStepEvents++;
-					//if (loggingOn) printf("step event at t=%.16g\n", time);
-				}
-				INFO("Event handled\n");
-
-				// event iteration in one step, ignoring intermediate results
-				eventInfo.newDiscreteStatesNeeded = fmi2True;
-				eventInfo.terminateSimulation = fmi2False;
-				while (eventInfo.newDiscreteStatesNeeded && !eventInfo.terminateSimulation) {
-					// update discrete states
-					fmi2Flag = fmu->newDiscreteStates(c, &eventInfo);
-					if (fmi2Flag > fmi2Warning) return error("could not set a new discrete state");
-
-					// check for change of value of states
-					// if (eventInfo.valuesOfContinuousStatesChanged && loggingOn) {
-					// 	printf("continuous state values changed at t=%.16g\n", time);
-					// }
-					// if (eventInfo.nominalsOfContinuousStatesChanged && loggingOn) {
-					// 	printf("nominals of continuous state changed  at t=%.16g\n", time);
-					// }
-				}
-				if (eventInfo.terminateSimulation) {
-					printf("model requested termination at t=%.16g\n", time);
-					break; // success
-				}
-
-				// enter Continuous-Time Mode
-				fmi2Flag = fmu->enterContinuousTimeMode(c);
-				if (fmi2Flag > fmi2Warning) return error("could not enter continuous time mode");
-			} // if event
-			// Get the variable values for this step
-			for (i = 0; i < nVariables-1; i++) {
-				if (variables[i].type == REAL) {
-					fmu->getReal(c, &variables[i].valueReference, 1, &output[i + 1][nSteps]);
-				} else if (variables[i].type == INTEGER) {
-					fmi2Integer intValue;
-					fmu->getInteger(c, &variables[i].valueReference, 1, &intValue);
-					output[i + 1][nSteps] = (double)intValue;
-				}
-			}
-			nSteps++;
-		} // while
-	}
-	// cleanup
-	fmi2Flag = fmu->terminate(c);
-	if (fmi2Flag > fmi2Warning) return error("could not terminate model");
-	
-	fmu->freeInstance(c);
-	if (x != NULL) free(x);
-    if (xdot != NULL) free(xdot);
-    if (z != NULL) free(z);
-    if (prez != NULL) free(prez);
-
-	//print simulation summary
-	    // print simulation summary
-    printf("Simulation from %g to %g terminated successful\n", tStart, tEnd);
-    printf("  steps ............ %d\n", nSteps);
-    printf("  fixed step size .. %g\n", h);
-    printf("  time events ...... %d\n", nTimeEvents);
-    printf("  state events ..... %d\n", nStateEvents);
-    printf("  step events ...... %d\n", nStepEvents);
-
-	//print the output
-	for (i = 0; i < nVariables - 1; i++) {
-		printf("%s: ", variables[i+1].name);
-		for (int j = 0; j < nSteps; j++) {
-			printf("%f ", output[i+1][j]);
-		}
-		printf("\n");
-	}
-	
-	//free the output
-	for (i = 0; i < nVariables + 1; i++) {
-		free(output[i]);
-	}
-	free(output);
-
-    return 1; // success
-};
-
 SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, double h) {
     SimulationState *state = (SimulationState*)calloc(1, sizeof(SimulationState));
     if (!state) return NULL;
@@ -395,6 +139,7 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
         return NULL;
     }
 
+	//TODO: get this using the output.c file
     // Get state dimensions
     state->nx = getNumberOfContinuousStates(state->component);
     state->nz = getNumberOfEventIndicators(state->component);
@@ -458,15 +203,7 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
             return NULL;
         }
     }
-
-    if (!state->eventInfo.terminateSimulation) {
-        fmi2Flag = fmu->enterContinuousTimeMode(state->component);
-        if (fmi2Flag > fmi2Warning) {
-            fmu->freeInstance(state->component);
-            free(state);
-            return NULL;
-        }
-    }
+    
 
     // Initialize variables and output array
 	// Output is an array which value get replaced with each itearation
@@ -498,16 +235,35 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
  * @return fmi2Status Status of the simulation step
  */
 fmi2Status simulationDoStep(FMU *fmu, SimulationState *state) {
+
+	//fmi2FMUstate *fmuState = calloc(1, sizeof(fmi2FMUstate));
+	fmi2Status fmi2Flag;
+	double tPre = state->time;
+    double dt;
+    fmi2Boolean timeEvent, stateEvent, stepEvent, terminateSimulation;
+
+	//TODO: Voir si y'a moyen de faire ça sans tricher...
+	ModelInstance* comp = (ModelInstance*)state->component;
+	//printf("Model instance values: %d \n", comp->state);
+
+
+	if (!state->eventInfo.terminateSimulation && comp->state < ContinuousTimeMode) {
+		fmi2Flag = fmu->enterContinuousTimeMode(state->component);
+		if (fmi2Flag > fmi2Warning) {
+			fmu->freeInstance(state->component);
+			free(state);
+			INFO("Error entering continuous time mode\n");
+			return fmi2Discard;
+		}
+	}
+
     INFO("Entering simulation loop\n");
 	if (state->time >= state->tEnd || state->eventInfo.terminateSimulation) {
         INFO("Simulation already terminated\n");
 		return fmi2Discard;
     }
 
-    fmi2Status fmi2Flag;
-    double tPre = state->time;
-    double dt;
-    fmi2Boolean timeEvent, stateEvent, stepEvent, terminateSimulation;
+    //fmi2Status fmi2Flag;
 
     // Get current state and derivatives
     fmi2Flag = fmu->getContinuousStates(state->component, state->x, state->nx);
@@ -617,26 +373,11 @@ fmi2Status simulationDoStep(FMU *fmu, SimulationState *state) {
 }
 
 
-
-
-
-
-// Test for yield statement
-
 // Structure pour stocker l'état du générateur
 typedef struct example_My_Generator_obj_t {
 	mp_obj_base_t base;
 	SimulationState state;
 } example_My_Generator_obj_t;
-
-// Fonction pour avoir le nombre current sans l'incrémenter
-// static mp_obj_t example_MyGenerator_getiter(mp_obj_t self_in) {
-// 	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(self_in);
-// 	return mp_obj_new_int(self->current);
-// }
-
-// On l'associe a une fonction python
-//static MP_DEFINE_CONST_FUN_OBJ_1(example_MyGenerator_getCurrent_obj, example_MyGenerator_getiter);
 
 // Fonction print, gère MyGenerator.__repr__ et MyGenerator.__str__
 static void example_MyGenerator_print(const mp_print_t *print, mp_obj_t self_in, mp_print_kind_t kind) {
@@ -648,7 +389,15 @@ static void example_MyGenerator_print(const mp_print_t *print, mp_obj_t self_in,
 	}
 }
 
-
+static mp_obj_t get_output_tuple(SimulationState* state) {
+    mp_obj_t *items = m_new(mp_obj_t, state->nVariables);
+	items[0] = mp_obj_new_int(state->nSteps);
+	for (int i = 1; i < state->nVariables; i++) {
+		items[i] = mp_obj_new_float(state->output[i]);
+	}
+	mp_obj_t tuple = mp_obj_new_tuple(state->nVariables, items);
+	return tuple;
+}
 
 // Fonction "itérable" appelée pour obtenir le prochain élément
 static mp_obj_t my_generator_next(mp_obj_t self_in) {
@@ -656,37 +405,12 @@ static mp_obj_t my_generator_next(mp_obj_t self_in) {
 
 	simulationDoStep(&fmu, &self->state);
 
-
 	if (self->state.time >= self->state.tEnd || self->state.eventInfo.terminateSimulation) {
 		return mp_make_stop_iteration(MP_OBJ_NULL); // Signal de fin
 	}
 
-	mp_obj_t *items = m_new(mp_obj_t, self->state.nVariables); //TODO: Replace output directly by this variable
-	items[0] = mp_obj_new_int(self->state.nSteps);
-	for (int i = 1; i < self->state.nVariables; i++) {
-		items[i] = mp_obj_new_float(self->state.output[i]);
-	}
-	mp_obj_t value = mp_obj_new_tuple(self->state.nVariables, items);
-	return value;
+	return get_output_tuple(&self->state);
 } 
-
-// Fonction initialisation du générateur
-// static mp_obj_t my_generator_make_new(const mp_obj_type_t *type, size_t n_args, size_t n_kw, const mp_obj_t *args) {
-// 	mp_arg_check_num(n_args, n_kw, 1, 1, false); //1 arguments : simulation state
-// 	example_My_Generator_obj_t *self;
-// 	self = mp_obj_malloc(example_My_Generator_obj_t, type);
-// 	self->base.type = type;
-// 	self->current = mp_obj_get_int(args[0]);
-// 	self->end = mp_obj_get_int(args[1]);
-// 	return MP_OBJ_FROM_PTR(self);
-// }
-
-// This collects all methods and other static class attributes of the Timer.
-// The table structure is similar to the module table, as detailed below.
-// static const mp_rom_map_elem_t example_MyGenerator_locals_dict_table[] = {
-//      { MP_ROM_QSTR(MP_QSTR_getCurrent), MP_ROM_PTR(&example_MyGenerator_getCurrent_obj) },
-// };
-//  static MP_DEFINE_CONST_DICT(example_MyGenerator_locals_dict, example_MyGenerator_locals_dict_table);
 
 
 // Définition du type
@@ -719,34 +443,43 @@ MP_DEFINE_CONST_OBJ_TYPE(
  * 5. Returns a MicroPython integer object indicating success.
  */
 static mp_obj_t example_simulate(size_t n_args, const mp_obj_t *args) {
-	//double tStart = mp_obj_get_float(start_time);
-	//printf("tStart: %f\n", tStart);
 	double tStart = mp_obj_get_float(args[0]);
 	double tEnd = mp_obj_get_float(args[1]);
 	double h = mp_obj_get_float(args[2]);
-	bool simulateAllBool = mp_obj_is_true(args[3]);
 
 	loadFunctions(&fmu);
+	//simulate(&fmu, tStart, tEnd, h);
 
-	if (simulateAllBool)
-	{
-		simulate(&fmu, tStart, tEnd, h);
-		return mp_obj_new_int(1);
-	} else {
+	SimulationState *state = initializeSimulation(&fmu, tStart, tEnd, h);
+    mp_obj_t result = mp_obj_new_list(0, NULL);
 
-		SimulationState *state;
-		state = initializeSimulation(&fmu, tStart, tEnd, h);
+    while (!(state->time >= state->tEnd || state->eventInfo.terminateSimulation)) {
+        simulationDoStep(&fmu, state);
+        mp_obj_list_append(result, get_output_tuple(state));
+    }
 
-		example_My_Generator_obj_t *self;
-		self = mp_obj_malloc(example_My_Generator_obj_t, &example_type_MyGenerator);
-		self->base.type = &example_type_MyGenerator;
-		self->state = *state;
-		return MP_OBJ_FROM_PTR(self);
-	}
+	return result;
 }
 
-// On permet l'appel de cette fonction dans python :
-static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_simulate_obj, 4, 4, example_simulate);
+static mp_obj_t example_setup_simulation(size_t n_args, const mp_obj_t *args) {
+	double tStart = mp_obj_get_float(args[0]);
+	double tEnd = mp_obj_get_float(args[1]);
+	double h = mp_obj_get_float(args[2]);
+
+	loadFunctions(&fmu);
+	SimulationState *state;
+	state = initializeSimulation(&fmu, tStart, tEnd, h);
+
+	example_My_Generator_obj_t *self;
+	self = mp_obj_malloc(example_My_Generator_obj_t, &example_type_MyGenerator);
+	self->base.type = &example_type_MyGenerator;
+	self->state = *state;
+	return MP_OBJ_FROM_PTR(self);
+}
+
+// On permet l'appel de ces fonctions dans python :
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_simulate_obj, 3, 3, example_simulate);
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_setup_simulation_obj, 3, 3, example_setup_simulation);
 
 static int get_variable_index(const char * name) {
 	ScalarVariable *variables;
@@ -769,25 +502,33 @@ static mp_obj_t example_get_variable_count() {
 
 static mp_obj_t example_change_variable_value(size_t n_args, const mp_obj_t *args) { //TODO: more robust arg check
 	//mp_obj_t generator, mp_obj_t ValueReference, mp_obj_t value
+	//fmi2Status status;
 	mp_obj_t generator = args[0];
 	mp_obj_t ValueReference = args[1];
 	mp_obj_t value = args[2];
-	printf("ValueReference: %ld\n", mp_obj_get_int(ValueReference));
+
+	if (mp_obj_is_str(ValueReference)) {
+		const char *name = mp_obj_str_get_str(ValueReference);
+		int idx = get_variable_index(name);
+		if (idx >= 0) {
+			ValueReference = mp_obj_new_int(idx);
+		} else {
+			mp_raise_ValueError(MP_ERROR_TEXT("Variable not found"));
+			return mp_const_false;
+		}
+	}
+
+	//ModelInstance* instance = (ModelInstance*)self->state.component;
+	//printf("ValueReference: %ld\n", mp_obj_get_int(ValueReference));
 	example_My_Generator_obj_t *self = MP_OBJ_TO_PTR(generator);
-	//printf("Generator object retrieved\n");
-	//Status setFloat64(ModelInstance* comp, ValueReference vr, const double value[], size_t nValues, size_t* index)
 	const double val = mp_obj_get_float(value);
-	ModelInstance* instance = (ModelInstance*)self->state.component;
-	instance->modelData.g = val;
-	//size_t index = 0;
-	// printf("Value retrieved and casted : %lf\n", (&val)[index++]);
-	// index = 0;
-	// fmi2Status status = setFloat64(self->state.component, mp_obj_get_int(ValueReference), &val, 1, &index);
-	// printf("Value set\n");
-	// if (status > fmi2Warning) {
-	// 	mp_raise_ValueError(MP_ERROR_TEXT("Failed to set variable value"));
-	// 	return mp_const_false;
-	// }
+	size_t index = 0;
+	fmi2Status status = setFloat64(self->state.component, mp_obj_get_int(ValueReference)-1, &val, 1, &index);
+	if (status > fmi2Warning) {
+		mp_raise_ValueError(MP_ERROR_TEXT("Failed to set variable value"));
+		return mp_const_false;
+	}
+	printf("Value set for %s\n", self->state.variables[mp_obj_get_int(ValueReference)].name);
 	return mp_const_true;
 
 }
@@ -886,6 +627,7 @@ static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(example_get_variables_description_obj
 static const mp_rom_map_elem_t example_module_globals_table[] = {
 	{ MP_ROM_QSTR(MP_QSTR___name__), MP_ROM_QSTR(MP_QSTR_testlibrary)},
 	{ MP_ROM_QSTR(MP_QSTR_simulate), MP_ROM_PTR(&example_simulate_obj)},
+	{ MP_ROM_QSTR(MP_QSTR_setup_simulation), MP_ROM_PTR(&example_setup_simulation_obj)},
 	{ MP_ROM_QSTR(MP_QSTR_MyGenerator), MP_ROM_PTR(&example_type_MyGenerator) },
 	{ MP_ROM_QSTR(MP_QSTR_get_variables_names), MP_ROM_PTR(&example_get_variable_names_obj) },
 	{ MP_ROM_QSTR(MP_QSTR_get_variables_base_values), MP_ROM_PTR(&example_get_variables_base_values_obj) },
@@ -902,4 +644,4 @@ const mp_obj_module_t example_user_testlibrary = {
 };
 
 // Enregistrement le module pour le rendre accessible sous python :
-MP_REGISTER_MODULE(MP_QSTR_testlibrary, example_user_testlibrary);
+MP_REGISTER_MODULE(MP_QSTR_FMUSimulator, example_user_testlibrary);
