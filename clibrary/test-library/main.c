@@ -1,6 +1,7 @@
 #include <stdlib.h>
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 #include "headers/fmi2TypesPlatform.h"
 #include "headers/fmi2FunctionTypes.h"
 #include "headers/fmi2Functions.h"
@@ -13,33 +14,7 @@
 
 //Fichier C créé pour le simulateur
 #include "fmi2.c"
-#include "output.c"
-
-// A faire :
-// Changer la façon de gérer la simulation : 2 cas
-// - Faire toute la simulation en une seule fois : Appeler la fonction d'initialisation puis la fonction doStep jusqu'à la fin
-// - Faire étape par étape : première initialisation, qui se termine uniquement lorsque nous récupérons la première variable
-//
-// Changer le parseur pour xmllint :
-// Pour avoir le même résultat que grep mais pas sur la même ligne :
-// xmllint --xpath "//ScalarVariable" ./fmu/modelDescription.xml --format
-
-// Faire 2 fonctions en python séparées : 
-// - une pour la simulation entière qui renvoit la liste des tuples des variables à chaque étape
-// - une pour l'initialisation qui renvoit un générateur qui renvoit les variables à chaque étape
-// Le component dans le simulateur ne doit pas être en mode continu à la fin de l'initialisation pour qu'on puisse encore modifier les valeurs initiales des variables
-// C'est le premier appel à doStep qui doit passer en mode continu (actuellement c'est l'initialisation qui le fait, ce qui empèche de modifier les valeurs initiales des variables)
-
-
-
-
-//TODO: Make those values read by the Makefile
-
-#define FMI_VERSION 2
-
-#ifndef fmuGUID
-#define fmuGUID "{1AE5E10D-9521-4DE3-80B9-D0EAAA7D5AF1}"
-#endif
+#include "modelDescription.c"
 
 //Affichage de messages supplémentaire si le mode debug est activé lors de la compilation avec le flag -DDEBUG
 #ifndef DEBUG
@@ -67,6 +42,7 @@ typedef struct {
     double *prez;                    // previous state event indicators
     double time;                     // current simulation time
     double h;                        // step size
+    double tStart;                   // start time
     double tEnd;                     // end time
     fmi2EventInfo eventInfo;         // event info
     ScalarVariable *variables;       // model variables
@@ -81,7 +57,22 @@ typedef struct {
 
 
 FMU fmu;
-
+/**
+ * @brief Converts an fmi2Status enum value to its corresponding string representation.
+ *
+ * This function takes an fmi2Status value and returns a string that represents the status.
+ * The possible status values and their corresponding strings are:
+ * - fmi2OK: "OK"
+ * - fmi2Warning: "Warning"
+ * - fmi2Discard: "Discard"
+ * - fmi2Error: "Error"
+ * - fmi2Fatal: "Fatal"
+ * - fmi2Pending: "Pending"
+ * - default: "?"
+ *
+ * @param status The fmi2Status value to be converted to a string.
+ * @return A string representing the given fmi2Status value.
+ */
 char * fmi2StatusToString(fmi2Status status) {
 	switch (status) {
 		case fmi2OK: return "OK";
@@ -96,6 +87,19 @@ char * fmi2StatusToString(fmi2Status status) {
 
 
 #define MAX_MSG_SIZE 1000
+/**
+ * @brief Logs messages from the FMU (Functional Mock-up Unit).
+ *
+ * This function is used to log messages from the FMU, providing information about the instance,
+ * status, category, and the message itself. It formats the message using variable arguments.
+ *
+ * @param componentEnvironment A pointer to the component environment (unused in this function).
+ * @param instanceName The name of the FMU instance. If NULL, it defaults to "?".
+ * @param status The status of the FMU, represented as an fmi2Status enum.
+ * @param category The category of the message. If NULL, it defaults to "?".
+ * @param message The message to be logged, which can include format specifiers.
+ * @param ... Additional arguments for the format specifiers in the message.
+ */
 void fmuLogger (void *componentEnvironment, fmi2String instanceName, fmi2Status status,
                fmi2String category, fmi2String message, ...) {
 	char msg[MAX_MSG_SIZE];
@@ -111,11 +115,58 @@ void fmuLogger (void *componentEnvironment, fmi2String instanceName, fmi2Status 
 	printf("%s %s (%s): %s\n", fmi2StatusToString(status), instanceName, category, msg);
 }
 
+/**
+ * @brief Prints an error message to the standard output.
+ *
+ * This function takes a string message as input and prints it to the standard
+ * output followed by a newline character. It then returns 0.
+ *
+ * @param message The error message to be printed.
+ * @return Always returns 0.
+ */
 int error(const char *message) {
 	printf("%s\n", message);
 	return 0;
 }
 
+/**
+ * @brief Frees all resources associated with the simulation state.
+ *
+ * @param fmu Pointer to the FMU structure
+ * @param state Pointer to the simulation state to be freed
+ */
+void cleanupSimulation(FMU *fmu, SimulationState *state) {
+    if (!state) return;
+
+    // Terminate the FMU
+    if (state->component) {
+        fmu->terminate(state->component);
+        fmu->freeInstance(state->component);
+    }
+
+    // Free state variables
+    if (state->x) free(state->x);
+    if (state->xdot) free(state->xdot);
+    if (state->z) free(state->z);
+    if (state->prez) free(state->prez);
+
+    // Free output array
+    if (state->output) {
+        free(state->output);
+    }
+
+    // Free the state structure itself
+    free(state);
+}
+
+/**
+ * @brief Initializes the FMU simulation and returns a simulation state structure.
+ *
+ * @param fmu Pointer to the FMU structure
+ * @param tEnd End time for simulation
+ * @param h Step size
+ * @return SimulationState* Pointer to initialized simulation state, NULL if error
+ */
 SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, double h) {
     SimulationState *state = (SimulationState*)calloc(1, sizeof(SimulationState));
     if (!state) return NULL;
@@ -132,21 +183,21 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
     fmi2CallbackFunctions callbacks = {fmuLogger, calloc, free, NULL, fmu};
 
     // Instantiate the FMU
-    state->component = fmu->instantiate("BouncingBall", fmi2ModelExchange, 
-                                      fmuGUID, NULL, &callbacks, fmi2False, fmi2False);
+    state->component = fmu->instantiate(model.modelName, fmi2ModelExchange, 
+                                      model.guid, NULL, &callbacks, fmi2False, fmi2False);
     if (!state->component) {
-        free(state);
+        cleanupSimulation(fmu,state);
         return NULL;
     }
 
-	//TODO: get this using the output.c file
     // Get state dimensions
-    state->nx = getNumberOfContinuousStates(state->component);
-    state->nz = getNumberOfEventIndicators(state->component);
+    state->nx = model.numberOfContinuousStates;
+    state->nz = model.numberOfEventIndicators;
 
     // Allocate memory for states and indicators
     state->x = (double*)calloc(state->nx, sizeof(double));
     state->xdot = (double*)calloc(state->nx, sizeof(double));
+
     if (state->nz > 0) {
         state->z = (double*)calloc(state->nz, sizeof(double));
         state->prez = (double*)calloc(state->nz, sizeof(double));
@@ -155,12 +206,7 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
     if ((!state->x || !state->xdot) || 
         (state->nz > 0 && (!state->z || !state->prez))) {
         // Cleanup and return on allocation failure
-        if (state->x) free(state->x);
-        if (state->xdot) free(state->xdot);
-        if (state->z) free(state->z);
-        if (state->prez) free(state->prez);
-        fmu->freeInstance(state->component);
-        free(state);
+        cleanupSimulation(fmu,state);
         return NULL;
     }
 
@@ -168,40 +214,18 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
     fmi2Boolean toleranceDefined = fmi2False;
     fmi2Real tolerance = 0;
     fmi2Status fmi2Flag = fmu->setupExperiment(state->component, toleranceDefined, 
-                                              tolerance, state->time, fmi2True, tEnd);
+                                              tolerance, state->tStart, fmi2True, state->tEnd);
     if (fmi2Flag > fmi2Warning) {
         // Cleanup and return on setup failure
-        fmu->freeInstance(state->component);
-        free(state);
+        cleanupSimulation(fmu,state);
         return NULL;
     }
 
     // Initialize the FMU
     fmi2Flag = fmu->enterInitializationMode(state->component);
     if (fmi2Flag > fmi2Warning) {
-        fmu->freeInstance(state->component);
-        free(state);
+        cleanupSimulation(fmu,state);
         return NULL;
-    }
-
-    fmi2Flag = fmu->exitInitializationMode(state->component);
-    if (fmi2Flag > fmi2Warning) {
-        fmu->freeInstance(state->component);
-        free(state);
-        return NULL;
-    }
-
-    // Initial event iteration
-    state->eventInfo.newDiscreteStatesNeeded = fmi2True;
-    state->eventInfo.terminateSimulation = fmi2False;
-    while (state->eventInfo.newDiscreteStatesNeeded && 
-           !state->eventInfo.terminateSimulation) {
-        fmi2Flag = fmu->newDiscreteStates(state->component, &state->eventInfo);
-        if (fmi2Flag > fmi2Warning) {
-            fmu->freeInstance(state->component);
-            free(state);
-            return NULL;
-        }
     }
     
 
@@ -209,18 +233,18 @@ SimulationState* initializeSimulation(FMU *fmu, double tStart, double tEnd, doub
 	// Output is an array which value get replaced with each itearation
     get_variable_list(&state->variables);
     state->nVariables = get_variable_count();
-    state->output = (double*)calloc(state->nVariables + 1, sizeof(double*));
+    state->output = (double*)calloc(state->nVariables, sizeof(double*));
 
     // Initialize first output values
-    for (int i = 0; i < state->nVariables - 1; i++) {
+    for (int i = 0; i < state->nVariables; i++) {
         if (state->variables[i].type == REAL) {
             fmu->getReal(state->component, &state->variables[i].valueReference, 
-                        1, &state->output[i+1]);
+                        1, &state->output[i]);
         } else if (state->variables[i].type == INTEGER) {
             fmi2Integer intValue;
             fmu->getInteger(state->component, &state->variables[i].valueReference, 
                            1, &intValue);
-            state->output[i + 1] = (double)intValue;
+            state->output[i] = (double)intValue;
         }
     }
 
@@ -246,14 +270,33 @@ fmi2Status simulationDoStep(FMU *fmu, SimulationState *state) {
 	ModelInstance* comp = (ModelInstance*)state->component;
 	//printf("Model instance values: %d \n", comp->state);
 
+    if (!state->eventInfo.terminateSimulation && comp->state <= InitializationMode) {
+            fmi2Flag = fmu->exitInitializationMode(state->component);
+        if (fmi2Flag > fmi2Warning) {
+            cleanupSimulation(fmu,state);
+            return fmi2Flag;
+        }
+
+        // Initial event iteration
+        state->eventInfo.newDiscreteStatesNeeded = fmi2True;
+        state->eventInfo.terminateSimulation = fmi2False;
+        while (state->eventInfo.newDiscreteStatesNeeded && 
+                !state->eventInfo.terminateSimulation) {
+            fmi2Flag = fmu->newDiscreteStates(state->component, &state->eventInfo);
+            if (fmi2Flag > fmi2Warning) {
+                cleanupSimulation(fmu,state);
+                return fmi2Flag;
+            }
+        }
+    }
+
 
 	if (!state->eventInfo.terminateSimulation && comp->state < ContinuousTimeMode) {
 		fmi2Flag = fmu->enterContinuousTimeMode(state->component);
 		if (fmi2Flag > fmi2Warning) {
-			fmu->freeInstance(state->component);
-			free(state);
+			cleanupSimulation(fmu,state);
 			INFO("Error entering continuous time mode\n");
-			return fmi2Discard;
+			return fmi2Flag;
 		}
 	}
 
@@ -354,17 +397,17 @@ fmi2Status simulationDoStep(FMU *fmu, SimulationState *state) {
     }
 
     // Update outputs
-    for (int i = 0; i < state->nVariables - 1; i++) {
+    for (int i = 0; i < state->nVariables; i++) {
         if (state->variables[i].type == REAL) {
             fmu->getReal(state->component, &state->variables[i].valueReference, 
-                        1, &state->output[i + 1]);
+                        1, &state->output[i]);
 			INFO("DEBUG:   %s (ref %d): %f\n", state->variables[i].name, 
-                   state->variables[i].valueReference, state->output[i + 1]);
+                   state->variables[i].valueReference, state->output[i]);
         } else if (state->variables[i].type == INTEGER) {
             fmi2Integer intValue;
             fmu->getInteger(state->component, &state->variables[i].valueReference, 
                            1, &intValue);
-            state->output[i + 1] = (double)intValue;
+            state->output[i] = (double)intValue;
         }
     }
 
@@ -390,10 +433,10 @@ static void example_MyGenerator_print(const mp_print_t *print, mp_obj_t self_in,
 }
 
 static mp_obj_t get_output_tuple(SimulationState* state) {
-    mp_obj_t *items = m_new(mp_obj_t, state->nVariables);
+    mp_obj_t *items = m_new(mp_obj_t, state->nVariables+1);
 	items[0] = mp_obj_new_int(state->nSteps);
-	for (int i = 1; i < state->nVariables; i++) {
-		items[i] = mp_obj_new_float(state->output[i]);
+	for (int i = 0; i < state->nVariables; i++) {
+		items[i+1] = mp_obj_new_float(state->output[i]);
 	}
 	mp_obj_t tuple = mp_obj_new_tuple(state->nVariables, items);
 	return tuple;
@@ -485,13 +528,13 @@ static int get_variable_index(const char * name) {
 	ScalarVariable *variables;
 	int nVariables = get_variable_count();
 	get_variable_list(&variables);
+    if (strcmp(name, "step") == 0) {
+		return 0;
+	}
 	for (int i = 0; i < nVariables; i++) {
 		if (strcmp(variables[i].name, name) == 0) {
-			return i;
+			return i+1;
 		}
-	}
-	if (strcmp(name, "step") == 0) {
-		return 0;
 	}
 	return -1;
 }
@@ -510,7 +553,7 @@ static mp_obj_t example_change_variable_value(size_t n_args, const mp_obj_t *arg
 	if (mp_obj_is_str(ValueReference)) {
 		const char *name = mp_obj_str_get_str(ValueReference);
 		int idx = get_variable_index(name);
-		if (idx >= 0) {
+		if (idx > 0) {
 			ValueReference = mp_obj_new_int(idx);
 		} else {
 			mp_raise_ValueError(MP_ERROR_TEXT("Variable not found"));
@@ -528,7 +571,7 @@ static mp_obj_t example_change_variable_value(size_t n_args, const mp_obj_t *arg
 		mp_raise_ValueError(MP_ERROR_TEXT("Failed to set variable value"));
 		return mp_const_false;
 	}
-	printf("Value set for %s\n", self->state.variables[mp_obj_get_int(ValueReference)].name);
+    INFO("Variable %s set to %f\n", index == 0 ? "step" : self->state.variables[mp_obj_get_int(ValueReference)-1].name, val);
 	return mp_const_true;
 
 }
@@ -537,18 +580,25 @@ static mp_obj_t example_change_variable_value(size_t n_args, const mp_obj_t *arg
 static mp_obj_t process_variables(size_t n_args, const mp_obj_t *args, mp_obj_t (*extractor)(ScalarVariable*)) {
     ScalarVariable *variables;
     int nVariables = get_variable_count();
+    ScalarVariable step = {
+        .name = "step",
+        .description = "Simulation step count",
+        .type = INTEGER,
+        .start = { .intValue = 0 }
+    };
     get_variable_list(&variables);
 
     // Validate argument count
-    if ((int)n_args > nVariables) {
+    if ((int)n_args > (nVariables+1)) {
         mp_raise_ValueError(MP_ERROR_TEXT("Too many arguments"));
     }
 
     // Handle no arguments: process all variables
     if (n_args == 0) {
-        mp_obj_t *items = m_new(mp_obj_t, nVariables);
+        mp_obj_t *items = m_new(mp_obj_t, nVariables+1);
+        items[0] = extractor(&step);
         for (int i = 0; i < nVariables; i++) {
-            items[i] = extractor(&variables[i]);
+            items[i+1] = extractor(&variables[i]);
         }
         return mp_obj_new_tuple(nVariables, items);
     }
@@ -558,16 +608,20 @@ static mp_obj_t process_variables(size_t n_args, const mp_obj_t *args, mp_obj_t 
     for (size_t i = 0; i < n_args; i++) {
         if (mp_obj_is_int(args[i])) {
             int idx = mp_obj_get_int(args[i]);
-            if (idx > 0 && idx < nVariables) {
-                items[i] = extractor(&variables[idx]);
+            if (idx == 0) {
+                items[i] = extractor(&step);
+            } else if (idx > 0 && idx < (nVariables+1)) {
+                items[i] = extractor(&variables[idx-1]);
             } else {
                 mp_raise_ValueError(MP_ERROR_TEXT("Index out of range"));
             }
 		} else if (mp_obj_is_str(args[i])) {
 			const char *name = mp_obj_str_get_str(args[i]);
 			int idx = get_variable_index(name);
-			if (idx >= 0) {
-				items[i] = extractor(&variables[idx]);
+            if (idx == 0) {
+                items[i] = extractor(&step);
+            } else if (idx > 0) {
+				items[i] = extractor(&variables[idx-1]);
 			} else {
 				mp_raise_ValueError(MP_ERROR_TEXT("Variable not found"));
 			}
@@ -580,16 +634,10 @@ static mp_obj_t process_variables(size_t n_args, const mp_obj_t *args, mp_obj_t 
 
 // Extractor functions
 static mp_obj_t extract_name(ScalarVariable *var) {
-	if (var->valueReference == 0) {
-		return mp_obj_new_str("step", 4);
-	}
     return mp_obj_new_str(var->name, strlen(var->name));
 }
 
 static mp_obj_t extract_base_value(ScalarVariable *var) {
-	if (var->valueReference == 0) {
-		return mp_obj_new_int(0);
-	}
     if (var->type == REAL) {
         return mp_obj_new_float(var->start.realValue);
     } else if (var->type == INTEGER) {
@@ -599,9 +647,6 @@ static mp_obj_t extract_base_value(ScalarVariable *var) {
 }
 
 static mp_obj_t extract_description(ScalarVariable *var) {
-	if (var->valueReference == 0) {
-		return mp_obj_new_str("The current step number", 23);
-	}
     return mp_obj_new_str(var->description, strlen(var->description));
 }
 

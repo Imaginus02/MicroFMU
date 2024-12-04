@@ -6,24 +6,17 @@ Ce projet a pour but de fournir une bibliothèque MicroPython permettant de lanc
 
 ### Problèmes actuels
 
-On doit créer nous même le générateur, il n'est pas utilisable directement :
+On doit créer un générateur :
 ```python
-b = MyGenerator(0,100)
-for i in b:
-	iter(b)
-```
-Pour seulement avoir la valeur, et non l'objet :
-```python
-b = MyGenerator(0,100)
-for i in range(100):
-	print(next(b))
+from FMUSimulator import *
+simInstance = setup_simulation(StartTime, EndTime, StepSize)
+for i in simInstance:
+	next(simInstance)
 ```
 
-Aura comme résultat :
+On peut modifier les valeurs avant et pendant la simulation (selon les variables) :
 ```python
-MyGenerator(0,100)
-MyGenerator(1,100)
-MyGenerator(2,100)
+bool change_variable_value(simInstance, variableIndex/VariableName, value)
 ```
 
 ## Compilation
@@ -54,13 +47,13 @@ Pour nettoyer le projet, utilisez la commande suivante :
 make clean
 ```
 
-Cela supprimera le répertoire `fmu` et son contenu.  
+Cela supprimera le répertoire `fmu` et son contenu, ainsi que le fichier modelDescription.c.  
 *Nb : Fonctionnel uniquement si lancé depuis le répertoire de la bibliothèque*  
 
 ## Remarques
 
-- Les fichiers `.fmu` seront automatiquement décompressés dans le répertoire `fmu` lors de la compilation.
-
+- Les fichiers `.fmu` seront automatiquement décompressés dans le répertoire `fmu` lors de la compilation.  
+- Le simulateur en C, sans les fonctions Python, est disponible [ici](https://github.com/Imaginus02/FMUSimulator)
 
 ## License
 

@@ -3,10 +3,6 @@
 all :
 	@echo "Building test-library MicroPython module"
 
-	# Décompression de l'archive .fmu
-	find $(CLIBRARY_MOD_DIR) -name "*.fmu" -exec unzip -o {} -d $(CLIBRARY_MOD_DIR)/fmu \;
-	@echo "FMU extracted"
-
 # Variable directory for user C modules
 CLIBRARY_MOD_DIR := $(USERMOD_DIR)
 # Ajouter tous les fichiers C à SRC_USERMOD :
